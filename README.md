@@ -1,4 +1,4 @@
-# are49ersinjured.com - a minimal static website on AWS
+# https://are49ersinjured.com - a minimal static website on AWS
 The repo contains a minimal example for deploying a static HTML web page (index.html) to AWS using S3 to store pages, CloudFront as the CDN, and ACM to generate certificates
 
 ## Hosting your own static website
