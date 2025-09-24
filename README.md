@@ -20,3 +20,9 @@ terraform init && \
 terraform plan && \
 terraform apply
 ```
+
+## Destroy resources
+When you are done using the website, the resources can be cleanly cleaned using command:
+```zsh
+terraform destroy -auto-approve
+```
