@@ -1,19 +1,16 @@
 variable "domain_name" {
   description = "Primary apex domain name for the static site."
   type        = string
-  default     = "are49ersinjured.com"
 }
 
 variable "additional_aliases" {
   description = "Additional domain aliases that should route to the CloudFront distribution."
   type        = list(string)
-  default     = ["www.are49ersinjured.com"]
 }
 
 variable "bucket_name" {
   description = "Name of the S3 bucket that stores the site assets."
   type        = string
-  default     = "are49ersinjured.com"
 }
 
 variable "aws_region" {
@@ -43,7 +40,7 @@ variable "index_content_type" {
 variable "price_class" {
   description = "CloudFront price class to control edge location coverage."
   type        = string
-  default     = "PriceClass_100"
+  default     = "PriceClass_100" # cheapest offering
 }
 
 variable "tags" {

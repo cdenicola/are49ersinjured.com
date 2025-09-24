@@ -15,10 +15,11 @@ locals {
   index_source = var.index_source != "" ? var.index_source : "${path.module}/${var.index_document}"
 }
 
+# resources aws region
 provider "aws" {
   region = var.aws_region
 }
-
+# aws region for acm (must be us-east-1)
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
@@ -29,6 +30,9 @@ data "aws_route53_zone" "domain" {
   private_zone = false
 }
 
+#####################
+# AWS ACM Certificate
+#####################
 resource "aws_acm_certificate" "site" {
   provider = aws.us_east_1
 
@@ -66,26 +70,13 @@ resource "aws_acm_certificate_validation" "site" {
   validation_record_fqdns = [for record in aws_route53_record.certificate_validation : record.fqdn]
 }
 
+################
+# S3 site bucket
+################
 resource "aws_s3_bucket" "site" {
   bucket = var.bucket_name
 
   tags = local.tags
-}
-
-resource "aws_s3_bucket_versioning" "site" {
-  bucket = aws_s3_bucket.site.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_ownership_controls" "site" {
-  bucket = aws_s3_bucket.site.id
-
-  rule {
-    object_ownership = "BucketOwnerPreferred"
-  }
 }
 
 resource "aws_s3_bucket_public_access_block" "site" {
@@ -96,8 +87,34 @@ resource "aws_s3_bucket_public_access_block" "site" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_website_configuration" "site" {
+  bucket = aws_s3_bucket.site.id
+
+  index_document {
+    suffix = var.index_document
+  }
+
+  #error_document {
+  #  key = "error.html" # TODO: error file
+  #}
+}
+
+resource "aws_s3_object" "index" {
+  bucket = aws_s3_bucket.site.id
+  key    = var.index_document
+
+  source       = local.index_source
+  content_type = var.index_content_type
+  etag         = filemd5(local.index_source)
+}
+
+# TODO: upload more files
+
+################
+# CloudFront CDN
+################
 resource "aws_cloudfront_origin_access_control" "site" {
-  name                              = "${var.domain_name}-oac"
+  name                              = "cf-${var.domain_name}-oac"
   description                       = "Origin access control for ${var.domain_name}"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
@@ -113,15 +130,14 @@ resource "aws_cloudfront_distribution" "site" {
 
   origin {
     domain_name = aws_s3_bucket.site.bucket_regional_domain_name
-    origin_id   = "s3-origin-${var.domain_name}"
-
+    origin_id   = aws_s3_bucket.site.id
     origin_access_control_id = aws_cloudfront_origin_access_control.site.id
   }
 
   default_cache_behavior {
     allowed_methods  = ["GET", "HEAD"]
     cached_methods   = ["GET", "HEAD"]
-    target_origin_id = "s3-origin-${var.domain_name}"
+    target_origin_id = aws_s3_bucket.site.id
 
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
@@ -145,6 +161,7 @@ resource "aws_cloudfront_distribution" "site" {
   depends_on = [aws_acm_certificate_validation.site]
 }
 
+# allows cloudfront to access s3 bucket
 data "aws_iam_policy_document" "site_bucket" {
   statement {
     sid     = "AllowCloudFrontServicePrincipalReadOnly"
@@ -184,11 +201,3 @@ resource "aws_route53_record" "aliases" {
   }
 }
 
-resource "aws_s3_object" "index" {
-  bucket = aws_s3_bucket.site.id
-  key    = var.index_document
-
-  source       = local.index_source
-  content_type = var.index_content_type
-  etag         = filemd5(local.index_source)
-}
