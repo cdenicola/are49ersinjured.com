@@ -12,7 +12,6 @@ terraform {
 locals {
   all_aliases  = distinct(concat([var.domain_name], var.additional_aliases))
   tags         = merge({ Project = var.domain_name }, var.tags)
-  index_source = var.index_source != "" ? var.index_source : "${path.module}/${var.index_document}"
 }
 
 # resources aws region
@@ -94,21 +93,21 @@ resource "aws_s3_bucket_website_configuration" "site" {
     suffix = var.index_document
   }
 
-  #error_document {
-  #  key = "error.html" # TODO: error file
-  #}
+  error_document {
+    key = var.error_document
+  }
 }
 
-resource "aws_s3_object" "index" {
+resource "aws_s3_object" "site_files" {
   bucket = aws_s3_bucket.site.id
-  key    = var.index_document
 
-  source       = local.index_source
-  content_type = var.index_content_type
-  etag         = filemd5(local.index_source)
+  # webfiles/ is the Directory contains files to be uploaded to S3
+  for_each = fileset("${var.site_files}/", "**/*.*")
+
+  key          = each.value
+  source       = "${var.site_files}/${each.value}"
+  content_type = each.value
 }
-
-# TODO: upload more files
 
 ################
 # CloudFront CDN

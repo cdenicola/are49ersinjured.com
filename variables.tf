@@ -25,16 +25,16 @@ variable "index_document" {
   default     = "index.html"
 }
 
-variable "index_source" {
-  description = "Local path to the HTML file to upload; defaults to a file with the same name as index_document in this directory."
+variable "error_document" {
+  description = "S3 object key that acts as the error document for the site."
   type        = string
-  default     = ""
+  default     = "error.html"
 }
 
-variable "index_content_type" {
-  description = "Content type metadata applied to the uploaded index document."
+variable "site_files" {
+  description = "Local path to folder of site files to upload."
   type        = string
-  default     = "text/html"
+  default     = ""
 }
 
 variable "price_class" {
