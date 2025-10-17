@@ -10,8 +10,17 @@ terraform {
 }
 
 locals {
-  all_aliases  = distinct(concat([var.domain_name], var.additional_aliases))
-  tags         = merge({ Project = var.domain_name }, var.tags)
+  all_aliases             = distinct(concat([var.domain_name], var.additional_aliases))
+  tags                    = merge({ Project = var.domain_name }, var.tags)
+  // REDIRECT VARS
+  redirect_domains = distinct([
+    for domain in [for d in var.redirect_domains : trimspace(d)] : domain if domain != ""
+  ])
+  redirect_enabled        = length(local.redirect_domains) > 0
+  redirect_primary_domain = local.redirect_enabled ? local.redirect_domains[0] : ""
+  redirect_alt_domains    = local.redirect_enabled ? slice(local.redirect_domains, 1, length(local.redirect_domains)) : []
+  redirect_function_name  = local.redirect_enabled ? replace(local.redirect_primary_domain, ".", "-") : ""
+  redirect_tags           = merge(var.tags, { Project = local.redirect_enabled ? local.redirect_primary_domain : var.domain_name })
 }
 
 # resources aws region
@@ -26,6 +35,12 @@ provider "aws" {
 
 data "aws_route53_zone" "domain" {
   name         = "${var.domain_name}."
+  private_zone = false
+}
+
+data "aws_route53_zone" "redirect" {
+  for_each     = { for domain in local.redirect_domains : domain => domain }
+  name         = "${each.value}."
   private_zone = false
 }
 
@@ -128,8 +143,8 @@ resource "aws_cloudfront_distribution" "site" {
   default_root_object = var.index_document
 
   origin {
-    domain_name = aws_s3_bucket.site.bucket_regional_domain_name
-    origin_id   = aws_s3_bucket.site.id
+    domain_name              = aws_s3_bucket.site.bucket_regional_domain_name
+    origin_id                = aws_s3_bucket.site.id
     origin_access_control_id = aws_cloudfront_origin_access_control.site.id
   }
 
@@ -200,3 +215,156 @@ resource "aws_route53_record" "aliases" {
   }
 }
 
+#########################
+# Redirect Distribution
+#########################
+resource "aws_acm_certificate" "redirect" {
+  count    = local.redirect_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  domain_name               = local.redirect_primary_domain
+  subject_alternative_names = local.redirect_alt_domains
+  validation_method         = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = local.redirect_tags
+}
+
+resource "aws_route53_record" "redirect_certificate_validation" {
+  for_each = local.redirect_enabled ? {
+    for dvo in aws_acm_certificate.redirect[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  } : {}
+
+  zone_id = data.aws_route53_zone.redirect[each.key].zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 60
+}
+
+resource "aws_acm_certificate_validation" "redirect" {
+  count    = local.redirect_enabled ? 1 : 0
+  provider = aws.us_east_1
+
+  certificate_arn         = aws_acm_certificate.redirect[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.redirect_certificate_validation : record.fqdn]
+}
+
+resource "aws_cloudfront_function" "redirect" {
+  count   = local.redirect_enabled ? 1 : 0
+  name    = "redirect-${local.redirect_function_name}"
+  runtime = "cloudfront-js-1.0"
+  comment = "Redirect ${local.redirect_primary_domain} to ${var.domain_name}"
+  publish = true
+
+  code = <<-EOF
+function handler(event) {
+  var request = event.request;
+  var host = "${var.domain_name}";
+  var location = "https://" + host + request.uri;
+  var query = [];
+  var qs = request.querystring;
+
+  for (var key in qs) {
+    if (Object.prototype.hasOwnProperty.call(qs, key)) {
+      var entry = qs[key];
+      if (entry.multiValue) {
+        for (var i = 0; i < entry.multiValue.length; i++) {
+          query.push(key + "=" + entry.multiValue[i].value);
+        }
+      } else if (entry.value) {
+        query.push(key + "=" + entry.value);
+      }
+    }
+  }
+
+  if (query.length > 0) {
+    location += "?" + query.join("&");
+  }
+
+  return {
+    statusCode: 301,
+    statusDescription: "Moved Permanently",
+    headers: {
+      location: { value: location },
+      "cache-control": { value: "max-age=86400" } // 1 day
+    }
+  };
+}
+EOF
+}
+
+resource "aws_cloudfront_distribution" "redirect" {
+  count = local.redirect_enabled ? 1 : 0
+
+  enabled         = true
+  is_ipv6_enabled = true
+  price_class     = var.price_class
+  comment         = "Redirect ${join(", ", local.redirect_domains)} to ${var.domain_name}"
+  aliases         = local.redirect_domains
+
+  origin {
+    domain_name = var.domain_name
+    origin_id   = "redirect-origin"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "redirect-origin"
+
+    viewer_protocol_policy = "redirect-to-https"
+    compress               = false
+
+    cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" // Managed-CachingOptimized
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.redirect[0].arn
+    }
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = aws_acm_certificate.redirect[0].arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  tags = local.redirect_tags
+
+  depends_on = [aws_acm_certificate_validation.redirect]
+}
+
+resource "aws_route53_record" "redirect_alias" {
+  for_each = { for domain in local.redirect_domains : domain => domain }
+
+  zone_id = data.aws_route53_zone.redirect[each.key].zone_id
+  name    = each.value
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.redirect[0].domain_name
+    zone_id                = aws_cloudfront_distribution.redirect[0].hosted_zone_id
+    evaluate_target_health = false
+  }
+}

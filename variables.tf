@@ -48,3 +48,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "redirect_domains" {
+  description = "Optional list of domains that should redirect to the primary site."
+  type        = list(string)
+  default     = []
+}
